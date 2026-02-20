@@ -1,0 +1,109 @@
+name: Build OpenClaw iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      signing_mode:
+        description: 'Signing mode'
+        required: true
+        default: 'personal'
+        type: choice
+        options:
+          - personal
+          - developer
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install pnpm
+        run: npm install -g pnpm@latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile || pnpm install
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Select Xcode 16
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer || \
+          sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer || \
+          sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer || \
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Configure signing (Personal Team)
+        if: inputs.signing_mode == 'personal'
+        run: |
+          cd apps/ios
+          cat > LocalSigning.xcconfig << 'EOF'
+          DEVELOPMENT_TEAM = ${{ secrets.APPLE_TEAM_ID }}
+          CODE_SIGN_IDENTITY = Apple Development
+          CODE_SIGN_STYLE = Automatic
+          PRODUCT_BUNDLE_IDENTIFIER = ai.openclaw.app.lufe
+          EOF
+
+      - name: Generate Xcode project
+        run: |
+          cd apps/ios
+          xcodegen generate
+          ls -la OpenClaw.xcodeproj/
+
+      - name: Build iOS app
+        run: |
+          cd apps/ios
+          xcodebuild \
+            -project OpenClaw.xcodeproj \
+            -scheme OpenClaw \
+            -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            -allowProvisioningUpdates \
+            clean build 2>&1 | tail -50
+
+      - name: Create unsigned IPA
+        run: |
+          cd apps/ios/build
+          APP_PATH=$(find . -name "OpenClaw.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: OpenClaw.app not found"
+            find . -name "*.app" -type d
+            exit 1
+          fi
+          echo "Found app: $APP_PATH"
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/
+          zip -r OpenClaw-unsigned.ipa Payload/
+          ls -lh OpenClaw-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenClaw-iOS
+          path: apps/ios/build/OpenClaw-unsigned.ipa
+          retention-days: 30
+
+      - name: Build summary
+        run: |
+          echo "## 🦞 OpenClaw iOS Build Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Config:** Debug (unsigned)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Platform:** iOS" >> $GITHUB_STEP_SUMMARY
+          echo "- **Artifact:** OpenClaw-unsigned.ipa" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download the artifact and sign+install with \`xtool install\` on your Linux machine." >> $GITHUB_STEP_SUMMARY
