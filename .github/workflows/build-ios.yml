@@ -26,12 +26,19 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
-      - name: Select latest Xcode
+      - name: Select Xcode
         run: |
-          ls -d /Applications/Xcode_*.app | sort -V
-          LATEST=$(ls -d /Applications/Xcode_*.app | sort -t_ -k2 -V | tail -1)
-          echo "Selected: $LATEST"
-          sudo xcode-select -s "$LATEST/Contents/Developer"
+          # Use Xcode 16.4 (Swift 6.2, iOS 18 SDK - ad-hoc signing still works)
+          # Fall back to latest if not available
+          if [ -d "/Applications/Xcode_16.4.app" ]; then
+            XCODE="/Applications/Xcode_16.4.app"
+          elif [ -d "/Applications/Xcode_16.4.0.app" ]; then
+            XCODE="/Applications/Xcode_16.4.0.app"
+          else
+            XCODE=$(ls -d /Applications/Xcode_*.app | sort -t_ -k2 -V | tail -1)
+          fi
+          echo "Selected: $XCODE"
+          sudo xcode-select -s "$XCODE/Contents/Developer"
           xcodebuild -version
           swift --version
 
@@ -72,6 +79,8 @@ jobs:
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           cd apps/ios
+          
+          # Try with real signing first, fall back to ad-hoc
           xcodebuild \
             -project OpenClaw.xcodeproj \
             -scheme OpenClaw \
@@ -79,15 +88,34 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath $GITHUB_WORKSPACE/build-output \
-            CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="Apple Development" \
+            CODE_SIGN_STYLE=Automatic \
             DEVELOPMENT_TEAM="$TEAM_ID" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
             CODE_SIGNING_ALLOWED=YES \
             COMPILER_INDEX_STORE_ENABLE=NO \
+            -allowProvisioningUpdates \
             clean build 2>&1 | tee /tmp/build.log | tail -100
           
-          echo "Build exit code: $?"
+          BUILD_EXIT=$?
+          echo "Build exit code: $BUILD_EXIT"
+          
+          # If automatic signing failed, try ad-hoc (works on older SDKs)
+          if [ $BUILD_EXIT -ne 0 ]; then
+            echo "::warning::Automatic signing failed, trying ad-hoc..."
+            xcodebuild \
+              -project OpenClaw.xcodeproj \
+              -scheme OpenClaw \
+              -configuration Debug \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath $GITHUB_WORKSPACE/build-output \
+              CODE_SIGN_IDENTITY="-" \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGNING_ALLOWED=YES \
+              DEVELOPMENT_TEAM="" \
+              COMPILER_INDEX_STORE_ENABLE=NO \
+              build 2>&1 | tee /tmp/build2.log | tail -100
+          fi
 
       - name: Package IPA
         run: |
