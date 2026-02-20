@@ -68,7 +68,7 @@ jobs:
       - name: Build iOS app
         run: |
           cd apps/ios
-          # First try: normal build
+          # Build with ad-hoc signing (produces binary, xtool will re-sign locally)
           xcodebuild \
             -project OpenClaw.xcodeproj \
             -scheme OpenClaw \
@@ -78,14 +78,24 @@ jobs:
             -derivedDataPath $GITHUB_WORKSPACE/build-output \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_ALLOWED=YES \
             DEVELOPMENT_TEAM="" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             clean build 2>&1 | tee /tmp/build.log | tail -100
           
-          # Check if build actually succeeded
+          BUILD_EXIT=$?
+          echo "Build exit code: $BUILD_EXIT"
+          
+          # Show where .app ended up
+          echo "=== Searching for .app ==="
+          find $GITHUB_WORKSPACE/build-output -name "*.app" -type d 2>/dev/null
+          
+          # Even if build "failed" on signing, the binary might exist
           if ! find $GITHUB_WORKSPACE/build-output -name "OpenClaw.app" -type d | head -1 | grep -q .; then
-            echo "::warning::Build may have failed. Full log tail:"
-            tail -200 /tmp/build.log
+            echo "::warning::No .app found. Checking build products:"
+            find $GITHUB_WORKSPACE/build-output/Build -type f -name "OpenClaw" 2>/dev/null | head -5
+            echo "=== Last 50 lines of build log ==="
+            tail -50 /tmp/build.log
           fi
 
       - name: Find and package IPA
